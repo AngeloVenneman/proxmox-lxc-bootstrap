@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+BOOTSTRAP_VERSION="2026.09.11.2"
+
 # Optional host-level configuration file. Environment variables passed to the
 # command override values from the config file.
 CONFIG_FILE="${CONFIG_FILE:-}"
@@ -10,7 +12,6 @@ if [[ -n "$CONFIG_FILE" ]]; then
     exit 1
   }
 
-  # Preserve explicit environment overrides before sourcing the file.
   declare -A ENV_OVERRIDES=()
   for key in CORES MEMORY_MB SWAP_MB DISK_GB TEMPLATE_STORAGE ROOTFS_STORAGE BRIDGE IP_CONFIG GATEWAY TEMPLATE_PATTERN UNPRIVILEGED ONBOOT FEATURES; do
     if [[ -v "$key" ]]; then
@@ -32,7 +33,7 @@ SWAP_MB="${SWAP_MB:-512}"
 DISK_GB="${DISK_GB:-20}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-}"
 ROOTFS_STORAGE="${ROOTFS_STORAGE:-}"
-BRIDGE="${BRIDGE:-vmbr0}"
+BRIDGE="${BRIDGE:-}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 GATEWAY="${GATEWAY:-}"
 TEMPLATE_PATTERN="${TEMPLATE_PATTERN:-debian-13-standard_}"
@@ -54,16 +55,16 @@ Default profile:
   RAM:       2048 MB
   Swap:      512 MB
   Disk:      20 GB
-  OS:        newest Debian 13 standard template
-  Network:   DHCP on vmbr0
+  OS:        newest Debian 13 standard template for host architecture
+  Network:   DHCP
   LXC:       unprivileged
   Features:  nesting=1,keyctl=1
-  Storage:   asks you when multiple LXC rootfs storages are available
+  Storage:   asks when multiple rootfs storages are available
+  Bridge:    asks when multiple bridges are available
 
 Override settings with environment variables, for example:
   CORES=4 MEMORY_MB=4096 create-lxc.sh app01
-  IP_CONFIG=192.168.95.220/24 GATEWAY=192.168.95.1 create-lxc.sh app01
-  ROOTFS_STORAGE=local-zfs create-lxc.sh app01
+  ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 create-lxc.sh app01
 EOF
 }
 
@@ -90,7 +91,7 @@ trap cleanup EXIT
 
 [[ ${EUID} -eq 0 ]] || fail "Voer dit script uit als root op de Proxmox-host."
 
-for command in pct pveam pvesh pvesm awk grep sort tail head; do
+for command in pct pveam pvesh pvesm awk grep sort tail head dpkg; do
   command -v "$command" >/dev/null 2>&1 || fail "Vereist commando niet gevonden: $command"
 done
 
@@ -188,24 +189,109 @@ select_rootfs_storage() {
   done
 }
 
+available_bridges() {
+  {
+    local bridge_dir
+    local iface
+
+    for bridge_dir in /sys/class/net/*/bridge; do
+      [[ -d "$bridge_dir" ]] || continue
+      iface="${bridge_dir%/bridge}"
+      iface="${iface##*/}"
+      printf '%s\n' "$iface"
+    done
+
+    if command -v ovs-vsctl >/dev/null 2>&1; then
+      ovs-vsctl list-br 2>/dev/null || true
+    fi
+  } | awk 'NF' | sort -u
+}
+
+select_bridge() {
+  local requested="$1"
+  local candidates
+  local choice
+  local index
+  local -a options=()
+
+  candidates="$(available_bridges)"
+
+  if [[ -n "$requested" ]]; then
+    if ! grep -Fxq "$requested" <<<"$candidates"; then
+      fail "Bridge '$requested' bestaat niet of werd niet als bridge gedetecteerd. Beschikbaar: ${candidates//$'\n'/, }"
+    fi
+    printf '%s\n' "$requested"
+    return
+  fi
+
+  mapfile -t options <<<"$candidates"
+  if (( ${#options[@]} == 0 )) || [[ -z "${options[0]}" ]]; then
+    fail "Geen Linux- of OVS-bridge gevonden op deze Proxmox-host. Geef BRIDGE=<naam> mee als je een afwijkende netwerkconfiguratie gebruikt."
+  fi
+
+  if (( ${#options[@]} == 1 )); then
+    printf '%s\n' "${options[0]}"
+    return
+  fi
+
+  if [[ ! -t 0 ]]; then
+    fail "Er zijn meerdere netwerkbridges beschikbaar. Geef BRIDGE=<naam> mee in een niet-interactieve run."
+  fi
+
+  printf '\nBeschikbare netwerkbridges:\n' >&2
+  for index in "${!options[@]}"; do
+    printf '  %d) %s\n' "$((index + 1))" "${options[$index]}" >&2
+  done
+
+  while true; do
+    printf 'Kies bridge [1-%d]: ' "${#options[@]}" >&2
+    read -r choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
+      printf '%s\n' "${options[$((choice - 1))]}"
+      return
+    fi
+
+    printf 'Ongeldige keuze. Probeer opnieuw.\n' >&2
+  done
+}
+
 TEMPLATE_STORAGE="$(select_template_storage "$TEMPLATE_STORAGE")"
 ROOTFS_STORAGE="$(select_rootfs_storage "$ROOTFS_STORAGE")"
-
-log "Template storage: $TEMPLATE_STORAGE"
-log "LXC rootfs storage: $ROOTFS_STORAGE"
+BRIDGE="$(select_bridge "$BRIDGE")"
+HOST_ARCH="$(dpkg --print-architecture)"
 
 log "Proxmox appliance-index vernieuwen"
 pveam update >/dev/null
 
 TEMPLATE="$(
   pveam available --section system \
-    | awk -v pat="$TEMPLATE_PATTERN" '$0 ~ pat {print $2}' \
+    | awk -v pat="$TEMPLATE_PATTERN" -v arch="_${HOST_ARCH}.tar" 'index($0, pat) && index($0, arch) {print $2}' \
     | sort -V \
     | tail -n1
 )"
-[[ -n "$TEMPLATE" ]] || fail "Geen template gevonden voor patroon '$TEMPLATE_PATTERN'."
+[[ -n "$TEMPLATE" ]] || fail "Geen template gevonden voor '$TEMPLATE_PATTERN' met architectuur '$HOST_ARCH'."
 
 TEMPLATE_REF="${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}"
+
+cat <<EOF
+
+============================================================
+Provisioning plan - bootstrap $BOOTSTRAP_VERSION
+============================================================
+CTID:        $CTID
+Hostname:    $HOSTNAME
+Architectuur:$HOST_ARCH
+Template:    $TEMPLATE
+Tpl store:   $TEMPLATE_STORAGE
+Rootfs:      $ROOTFS_STORAGE
+Disk:        ${DISK_GB} GB
+CPU:         $CORES cores
+RAM:         ${MEMORY_MB} MB
+Bridge:      $BRIDGE
+IP config:   $IP_CONFIG
+============================================================
+EOF
 
 if ! pveam list "$TEMPLATE_STORAGE" | awk 'NR > 1 {print $1}' | grep -Fxq "$TEMPLATE_REF"; then
   log "Template downloaden: $TEMPLATE"
@@ -265,7 +351,6 @@ apt-get install -y \
   htop \
   gnupg
 
-# Remove distro packages that may conflict with Docker CE.
 for pkg in docker.io docker-compose docker-doc podman-docker containerd runc; do
   apt-get remove -y "$pkg" >/dev/null 2>&1 || true
 done
@@ -335,8 +420,10 @@ cat <<EOF
 ============================================================
 LXC klaar
 ============================================================
+Bootstrap:  $BOOTSTRAP_VERSION
 CTID:       $CTID
 Hostname:   $HOSTNAME
+Arch:       $HOST_ARCH
 CPU:        $CORES cores
 RAM:        ${MEMORY_MB} MB
 Swap:       ${SWAP_MB} MB
