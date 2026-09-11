@@ -30,8 +30,8 @@ CORES="${CORES:-2}"
 MEMORY_MB="${MEMORY_MB:-2048}"
 SWAP_MB="${SWAP_MB:-512}"
 DISK_GB="${DISK_GB:-20}"
-TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-ROOTFS_STORAGE="${ROOTFS_STORAGE:-local-lvm}"
+TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-}"
+ROOTFS_STORAGE="${ROOTFS_STORAGE:-}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 GATEWAY="${GATEWAY:-}"
@@ -54,14 +54,16 @@ Default profile:
   RAM:       2048 MB
   Swap:      512 MB
   Disk:      20 GB
-  OS:        Debian 13
+  OS:        newest Debian 13 standard template
   Network:   DHCP on vmbr0
   LXC:       unprivileged
   Features:  nesting=1,keyctl=1
+  Storage:   automatically detected by Proxmox content type
 
 Override settings with environment variables, for example:
   CORES=4 MEMORY_MB=4096 create-lxc.sh app01
   IP_CONFIG=192.168.95.220/24 GATEWAY=192.168.95.1 create-lxc.sh app01
+  ROOTFS_STORAGE=local-zfs create-lxc.sh app01
 EOF
 }
 
@@ -109,13 +111,38 @@ if pct status "$CTID" >/dev/null 2>&1; then
   fail "CTID $CTID bestaat al."
 fi
 
-storage_exists() {
-  local storage="$1"
-  pvesm status | awk 'NR > 1 {print $1}' | grep -Fxq "$storage"
+active_storages_for_content() {
+  local content="$1"
+  pvesm status --content "$content" --enabled 1 \
+    | awk 'NR > 1 && $3 == "active" {print $1}'
 }
 
-storage_exists "$TEMPLATE_STORAGE" || fail "Template storage '$TEMPLATE_STORAGE' bestaat niet."
-storage_exists "$ROOTFS_STORAGE" || fail "Rootfs storage '$ROOTFS_STORAGE' bestaat niet."
+select_storage() {
+  local content="$1"
+  local requested="$2"
+  local candidates
+  local selected
+
+  candidates="$(active_storages_for_content "$content")"
+
+  if [[ -n "$requested" ]]; then
+    if ! grep -Fxq "$requested" <<<"$candidates"; then
+      fail "Storage '$requested' is niet actief of ondersteunt contenttype '$content'. Beschikbaar: ${candidates//$'\n'/, }"
+    fi
+    printf '%s\n' "$requested"
+    return
+  fi
+
+  selected="$(head -n1 <<<"$candidates")"
+  [[ -n "$selected" ]] || fail "Geen actieve Proxmox-storage gevonden voor contenttype '$content'."
+  printf '%s\n' "$selected"
+}
+
+TEMPLATE_STORAGE="$(select_storage vztmpl "$TEMPLATE_STORAGE")"
+ROOTFS_STORAGE="$(select_storage rootdir "$ROOTFS_STORAGE")"
+
+log "Template storage: $TEMPLATE_STORAGE"
+log "LXC rootfs storage: $ROOTFS_STORAGE"
 
 log "Proxmox appliance-index vernieuwen"
 pveam update >/dev/null
@@ -264,6 +291,9 @@ CPU:        $CORES cores
 RAM:        ${MEMORY_MB} MB
 Swap:       ${SWAP_MB} MB
 Disk:       ${DISK_GB} GB
+Template:   $TEMPLATE
+Tpl store:  $TEMPLATE_STORAGE
+Rootfs:     $ROOTFS_STORAGE
 Bridge:     $BRIDGE
 IP:         ${IP:-onbekend}
 Git:        geïnstalleerd
