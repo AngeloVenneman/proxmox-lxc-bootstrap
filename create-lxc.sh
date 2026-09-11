@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="2026.09.11.6"
+BOOTSTRAP_VERSION="2026.09.11.7"
 
 CONFIG_FILE="${CONFIG_FILE:-}"
 if [[ -n "$CONFIG_FILE" ]]; then
@@ -127,8 +127,58 @@ if pct status "$CTID" >/dev/null 2>&1; then
   fail "CTID $CTID bestaat al."
 fi
 
+random_index() {
+  local max="$1"
+  local hex
+  hex="$(openssl rand -hex 4)"
+  printf '%d\n' "$((16#$hex % max))"
+}
+
+pick_char() {
+  local charset="$1"
+  local idx
+  idx="$(random_index "${#charset}")"
+  printf '%s' "${charset:idx:1}"
+}
+
+generate_root_password() {
+  local lower='abcdefghijklmnopqrstuvwxyz'
+  local upper='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  local digits='0123456789'
+  local symbols='!?.-_,'
+  local all="${lower}${upper}${digits}${symbols}"
+  local password=""
+  local i j tmp
+  local -a chars=()
+
+  # Garandeer minstens één teken uit elke categorie.
+  password+="$(pick_char "$lower")"
+  password+="$(pick_char "$upper")"
+  password+="$(pick_char "$digits")"
+  password+="$(pick_char "$symbols")"
+
+  # Vul aan tot 24 tekens met dezelfde toegelaten tekenset.
+  for ((i=0; i<20; i++)); do
+    password+="$(pick_char "$all")"
+  done
+
+  # Shuffle de posities zodat de verplichte categorieën niet voorspelbaar staan.
+  for ((i=0; i<${#password}; i++)); do
+    chars+=("${password:i:1}")
+  done
+
+  for ((i=${#chars[@]}-1; i>0; i--)); do
+    j="$(random_index "$((i+1))")"
+    tmp="${chars[i]}"
+    chars[i]="${chars[j]}"
+    chars[j]="$tmp"
+  done
+
+  printf '%s' "${chars[@]}"
+}
+
 if [[ -z "$ROOT_PASSWORD" ]]; then
-  ROOT_PASSWORD="$(openssl rand -hex 16)"
+  ROOT_PASSWORD="$(generate_root_password)"
 fi
 
 active_storages_for_content() {
