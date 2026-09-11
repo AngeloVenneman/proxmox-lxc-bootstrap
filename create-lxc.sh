@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="2026.09.11.4"
+BOOTSTRAP_VERSION="2026.09.11.5"
 
 CONFIG_FILE="${CONFIG_FILE:-}"
 if [[ -n "$CONFIG_FILE" ]]; then
@@ -362,6 +362,8 @@ cat > "$cleanup_file" <<'BOOTSTRAP'
 set -Eeuo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
 : "${APP_NAME:?APP_NAME ontbreekt}"
 : "${HOSTNAME_FQDN:?HOSTNAME_FQDN ontbreekt}"
@@ -479,6 +481,10 @@ Laat "Allow write access" uitgeschakeld tenzij je bewust vanuit deze LXC wilt pu
 EOF
 
 GITHUB_AUTH_STATUS="niet getest"
+GITHUB_REPO=""
+CHECKOUT_STATUS="niet uitgevoerd"
+COMPOSE_FILE=""
+
 if [[ -t 0 ]]; then
   while true; do
     printf '\nVoeg de deploy key toe in GitHub en druk daarna op Enter om de authenticatie te testen... '
@@ -489,6 +495,12 @@ if [[ -t 0 ]]; then
 
     if grep -qi "successfully authenticated" <<<"$AUTH_OUTPUT"; then
       GITHUB_AUTH_STATUS="OK"
+      GITHUB_REPO="$(awk '/successfully authenticated/ {repo=$2; sub(/!$/, "", repo); print repo; exit}' <<<"$AUTH_OUTPUT")"
+
+      if [[ ! "$GITHUB_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        GITHUB_REPO=""
+      fi
+
       success "GitHub deploy key authenticatie geslaagd"
       break
     fi
@@ -501,8 +513,40 @@ if [[ -t 0 ]]; then
       break
     fi
   done
+
+  if [[ "$GITHUB_AUTH_STATUS" == "OK" ]]; then
+    if [[ -z "$GITHUB_REPO" ]]; then
+      printf '\nAuthenticatie is OK, maar de repositorynaam kon niet automatisch worden afgeleid.\n'
+      printf 'GitHub repository (OWNER/REPOSITORY): '
+      read -r GITHUB_REPO
+      [[ "$GITHUB_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Ongeldige GitHub repository: $GITHUB_REPO"
+    else
+      log "GitHub repository automatisch gedetecteerd: $GITHUB_REPO"
+    fi
+
+    if pct exec "$CTID" -- test -d "$APP_DIR/.git"; then
+      CHECKOUT_STATUS="bestond al"
+      log "Git checkout bestaat al in $APP_DIR"
+    else
+      APP_CONTENT="$(pct exec "$CTID" -- /bin/sh -c "find '$APP_DIR' -mindepth 1 -maxdepth 1 -print -quit" 2>/dev/null || true)"
+      [[ -z "$APP_CONTENT" ]] || fail "Applicatiemap '$APP_DIR' is niet leeg; repository wordt niet automatisch overschreven."
+
+      log "Repository clonen naar $APP_DIR"
+      pct exec "$CTID" -- git clone "git@github.com:${GITHUB_REPO}.git" "$APP_DIR"
+      CHECKOUT_STATUS="OK"
+    fi
+
+    for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+      if pct exec "$CTID" -- test -f "$APP_DIR/$candidate"; then
+        COMPOSE_FILE="$candidate"
+        break
+      fi
+    done
+
+    success "Git checkout klaar voor git pull"
+  fi
 else
-  log "Niet-interactieve run: GitHub-authenticatietest overgeslagen."
+  log "Niet-interactieve run: GitHub-authenticatietest en repository-clone overgeslagen."
 fi
 
 success "LXC provisioning voltooid"
@@ -530,6 +574,9 @@ Git:        geïnstalleerd
 Docker:     geïnstalleerd
 Compose:    geïnstalleerd
 GitHub SSH: $GITHUB_AUTH_STATUS
+Repository: ${GITHUB_REPO:-niet gedetecteerd}
+Checkout:   $CHECKOUT_STATUS
+Compose:    ${COMPOSE_FILE:-geen composebestand gevonden}
 
 ROOT WACHTWOORD
 ---------------
@@ -541,10 +588,22 @@ Deploy private key:
 Applicatiemap:
   $APP_DIR
 
-Na het clonen van je repository:
+Volgende deploy/update:
   cd $APP_DIR
   git pull
+EOF
+
+if [[ -n "$COMPOSE_FILE" ]]; then
+  cat <<EOF
   docker compose up -d --build
+EOF
+else
+  cat <<EOF
+  # Geen composebestand gevonden; voeg eerst je deploymentconfiguratie toe.
+EOF
+fi
+
+cat <<EOF
 
 Open shell:
   pct enter $CTID
