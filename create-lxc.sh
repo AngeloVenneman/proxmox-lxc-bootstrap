@@ -58,7 +58,7 @@ Default profile:
   Network:   DHCP on vmbr0
   LXC:       unprivileged
   Features:  nesting=1,keyctl=1
-  Storage:   automatically detected by Proxmox content type
+  Storage:   asks you when multiple LXC rootfs storages are available
 
 Override settings with environment variables, for example:
   CORES=4 MEMORY_MB=4096 create-lxc.sh app01
@@ -90,7 +90,7 @@ trap cleanup EXIT
 
 [[ ${EUID} -eq 0 ]] || fail "Voer dit script uit als root op de Proxmox-host."
 
-for command in pct pveam pvesh pvesm awk grep sort tail; do
+for command in pct pveam pvesh pvesm awk grep sort tail head; do
   command -v "$command" >/dev/null 2>&1 || fail "Vereist commando niet gevonden: $command"
 done
 
@@ -117,29 +117,79 @@ active_storages_for_content() {
     | awk 'NR > 1 && $3 == "active" {print $1}'
 }
 
-select_storage() {
+validate_requested_storage() {
   local content="$1"
   local requested="$2"
   local candidates
-  local selected
 
   candidates="$(active_storages_for_content "$content")"
+  if ! grep -Fxq "$requested" <<<"$candidates"; then
+    fail "Storage '$requested' is niet actief of ondersteunt contenttype '$content'. Beschikbaar: ${candidates//$'\n'/, }"
+  fi
+}
+
+select_template_storage() {
+  local requested="$1"
+  local selected
 
   if [[ -n "$requested" ]]; then
-    if ! grep -Fxq "$requested" <<<"$candidates"; then
-      fail "Storage '$requested' is niet actief of ondersteunt contenttype '$content'. Beschikbaar: ${candidates//$'\n'/, }"
-    fi
+    validate_requested_storage vztmpl "$requested"
     printf '%s\n' "$requested"
     return
   fi
 
-  selected="$(head -n1 <<<"$candidates")"
-  [[ -n "$selected" ]] || fail "Geen actieve Proxmox-storage gevonden voor contenttype '$content'."
+  selected="$(active_storages_for_content vztmpl | head -n1)"
+  [[ -n "$selected" ]] || fail "Geen actieve Proxmox-storage gevonden voor LXC-templates (vztmpl)."
   printf '%s\n' "$selected"
 }
 
-TEMPLATE_STORAGE="$(select_storage vztmpl "$TEMPLATE_STORAGE")"
-ROOTFS_STORAGE="$(select_storage rootdir "$ROOTFS_STORAGE")"
+select_rootfs_storage() {
+  local requested="$1"
+  local choice
+  local index
+  local -a options=()
+
+  if [[ -n "$requested" ]]; then
+    validate_requested_storage rootdir "$requested"
+    printf '%s\n' "$requested"
+    return
+  fi
+
+  mapfile -t options < <(active_storages_for_content rootdir)
+
+  if (( ${#options[@]} == 0 )); then
+    fail "Geen actieve Proxmox-storage gevonden voor LXC-rootdisks (rootdir)."
+  fi
+
+  if (( ${#options[@]} == 1 )); then
+    printf '%s\n' "${options[0]}"
+    return
+  fi
+
+  if [[ ! -t 0 ]]; then
+    fail "Er zijn meerdere LXC-storages beschikbaar. Geef ROOTFS_STORAGE=<naam> mee in een niet-interactieve run."
+  fi
+
+  printf '\nBeschikbare storages voor de LXC root disk:\n' >&2
+  for index in "${!options[@]}"; do
+    printf '  %d) %s\n' "$((index + 1))" "${options[$index]}" >&2
+  done
+
+  while true; do
+    printf 'Kies storage [1-%d]: ' "${#options[@]}" >&2
+    read -r choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
+      printf '%s\n' "${options[$((choice - 1))]}"
+      return
+    fi
+
+    printf 'Ongeldige keuze. Probeer opnieuw.\n' >&2
+  done
+}
+
+TEMPLATE_STORAGE="$(select_template_storage "$TEMPLATE_STORAGE")"
+ROOTFS_STORAGE="$(select_rootfs_storage "$ROOTFS_STORAGE")"
 
 log "Template storage: $TEMPLATE_STORAGE"
 log "LXC rootfs storage: $ROOTFS_STORAGE"
