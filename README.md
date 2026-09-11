@@ -21,8 +21,10 @@ Publiek bootstrap-script om vanaf een Proxmox VE-host in één commando een Dock
 - automatische detectie van template-storage
 - interactieve keuze van LXC rootfs-storage wanneer meerdere storages beschikbaar zijn
 - automatische of interactieve bridgekeuze
-- willekeurig root-wachtwoord, één keer getoond aan het einde
+- willekeurig root-wachtwoord, getoond in de finale samenvatting
 - unieke ed25519 GitHub deploy key per LXC
+- interactieve pauze om de deploy key in GitHub toe te voegen
+- automatische GitHub SSH-authenticatietest voordat de bootstrap afrondt
 
 ## Snelste gebruik
 
@@ -60,7 +62,7 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-
 
 ## Root-wachtwoord
 
-Voor elke nieuwe LXC genereert het script standaard een willekeurig root-wachtwoord met OpenSSL. Het wachtwoord wordt ingesteld in de container en pas helemaal op het einde getoond.
+Voor elke nieuwe LXC genereert het script standaard een willekeurig root-wachtwoord met OpenSSL. Het wachtwoord wordt ingesteld in de container en pas in de finale samenvatting getoond.
 
 Het wachtwoord wordt niet in GitHub opgeslagen en staat niet in het configuratievoorbeeld.
 
@@ -82,7 +84,7 @@ In elke LXC wordt een unieke ed25519 deploy key aangemaakt:
 /root/.ssh/github_deploy_key.pub
 ```
 
-De private key blijft uitsluitend in de LXC. Aan het einde toont het script alleen de public key en fingerprint.
+De private key blijft uitsluitend in de LXC. Zodra provisioning klaar is toont het script de public key en fingerprint en pauzeert het.
 
 Voeg de getoonde public key toe aan de gewenste private GitHub-repository via:
 
@@ -92,11 +94,9 @@ Repository -> Settings -> Deploy keys -> Add deploy key
 
 Voor normaal deployen is read-only voldoende; laat `Allow write access` uitgeschakeld tenzij de LXC echt naar de repository moet kunnen pushen.
 
-Na toevoegen kun je vanuit de Proxmox-host testen:
+Wanneer de key in GitHub staat druk je in het bootstrap-script op Enter. Het script voert dan zelf een SSH-authenticatietest naar GitHub uit. Een geslaagde GitHub-melding met `successfully authenticated` wordt als succes beschouwd, ook al biedt GitHub geen interactieve shell aan.
 
-```bash
-pct exec <CTID> -- ssh -T git@github.com
-```
+Als de test nog niet slaagt kun je de GitHub-configuratie corrigeren en vanuit hetzelfde script opnieuw testen. De LXC hoeft niet opnieuw aangemaakt te worden.
 
 De LXC bevat ook `/root/.ssh/config`, zodat Git automatisch `/root/.ssh/github_deploy_key` gebruikt voor `github.com`.
 
@@ -234,9 +234,13 @@ FEATURES=nesting=1,keyctl=1
 20. Maakt `/opt/<appnaam>` aan.
 21. Genereert een unieke GitHub ed25519 deploy key en SSH-configuratie.
 22. Test Docker met `hello-world`.
-23. Toont CTID, hostname, storage, bridge, IP, root-wachtwoord en GitHub public deploy key.
+23. Toont de public deploy key en wacht tot je die in GitHub hebt toegevoegd.
+24. Test de GitHub SSH-authenticatie en laat indien nodig opnieuw proberen.
+25. Toont de finale samenvatting met root-wachtwoord en GitHub-status.
 
 ## Na provisioning
+
+Open de container:
 
 ```bash
 pct enter <CTID>
@@ -248,8 +252,16 @@ Ga daarna naar de applicatiemap:
 cd /opt/<appnaam>
 ```
 
-Nadat de deploy key in GitHub is toegevoegd kun je bijvoorbeeld een private repository klonen:
+De deploy key is dan al geverifieerd tegen GitHub. Je kunt de repository vervolgens klonen naar de applicatiemap:
 
 ```bash
 git clone git@github.com:OWNER/REPOSITORY.git /opt/<appnaam>
+```
+
+Daarna zijn toekomstige deployments bijvoorbeeld:
+
+```bash
+cd /opt/<appnaam>
+git pull
+docker compose up -d --build
 ```
