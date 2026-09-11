@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="2026.09.11.2"
+BOOTSTRAP_VERSION="2026.09.11.3"
 
 # Optional host-level configuration file. Environment variables passed to the
 # command override values from the config file.
@@ -40,15 +40,21 @@ TEMPLATE_PATTERN="${TEMPLATE_PATTERN:-debian-13-standard_}"
 UNPRIVILEGED="${UNPRIVILEGED:-1}"
 ONBOOT="${ONBOOT:-1}"
 FEATURES="${FEATURES:-nesting=1,keyctl=1}"
+ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  create-lxc.sh <hostname> [ctid]
+  create-lxc.sh [hostname-or-domain] [ctid]
 
 Examples:
-  create-lxc.sh d3deco
-  create-lxc.sh d3deco 220
+  create-lxc.sh
+  create-lxc.sh d3deco.be
+  create-lxc.sh d3deco.be 220
+
+When no hostname is supplied, the script asks for one interactively.
+The first hostname label becomes the app directory under /opt.
+Example: d3deco.be -> /opt/d3deco
 
 Default profile:
   CPU:       2 cores
@@ -63,8 +69,8 @@ Default profile:
   Bridge:    asks when multiple bridges are available
 
 Override settings with environment variables, for example:
-  CORES=4 MEMORY_MB=4096 create-lxc.sh app01
-  ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 create-lxc.sh app01
+  CORES=4 MEMORY_MB=4096 create-lxc.sh d3deco.be
+  ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 create-lxc.sh d3deco.be
 EOF
 }
 
@@ -91,25 +97,40 @@ trap cleanup EXIT
 
 [[ ${EUID} -eq 0 ]] || fail "Voer dit script uit als root op de Proxmox-host."
 
-for command in pct pveam pvesh pvesm awk grep sort tail head dpkg; do
+for command in pct pveam pvesh pvesm awk grep sort tail head dpkg openssl tr; do
   command -v "$command" >/dev/null 2>&1 || fail "Vereist commando niet gevonden: $command"
 done
 
 HOSTNAME="${1:-}"
-[[ -n "$HOSTNAME" ]] || {
-  usage
-  exit 1
-}
+if [[ -z "$HOSTNAME" ]]; then
+  if [[ -t 0 ]]; then
+    printf 'Hostname / domeinnaam (bv. d3deco.be): '
+    read -r HOSTNAME
+  else
+    usage
+    fail "Geen hostname opgegeven in een niet-interactieve run."
+  fi
+fi
 
 if [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]; then
   fail "Ongeldige hostname: $HOSTNAME"
 fi
+
+APP_SOURCE="$(printf '%s' "$HOSTNAME" | tr '[:upper:]' '[:lower:]')"
+APP_SOURCE="${APP_SOURCE#www.}"
+APP_NAME="${APP_SOURCE%%.*}"
+[[ -n "$APP_NAME" ]] || fail "Kon geen geldige applicatienaam afleiden uit '$HOSTNAME'."
+APP_DIR="/opt/${APP_NAME}"
 
 CTID="${2:-$(pvesh get /cluster/nextid)}"
 [[ "$CTID" =~ ^[0-9]+$ ]] || fail "Ongeldige CTID: $CTID"
 
 if pct status "$CTID" >/dev/null 2>&1; then
   fail "CTID $CTID bestaat al."
+fi
+
+if [[ -z "$ROOT_PASSWORD" ]]; then
+  ROOT_PASSWORD="$(openssl rand -hex 16)"
 fi
 
 active_storages_for_content() {
@@ -281,6 +302,8 @@ Provisioning plan - bootstrap $BOOTSTRAP_VERSION
 ============================================================
 CTID:        $CTID
 Hostname:    $HOSTNAME
+App naam:    $APP_NAME
+App map:     $APP_DIR
 Architectuur:$HOST_ARCH
 Template:    $TEMPLATE
 Tpl store:   $TEMPLATE_STORAGE
@@ -333,12 +356,18 @@ done
 
 [[ "$ready" == "1" ]] || fail "Container $CTID startte niet tijdig."
 
+# Set a generated root password without printing it before the final summary.
+pct exec "$CTID" -- /bin/bash -c "printf '%s\\n' 'root:${ROOT_PASSWORD}' | chpasswd"
+
 cleanup_file="$(mktemp)"
 cat > "$cleanup_file" <<'BOOTSTRAP'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+
+: "${APP_NAME:?APP_NAME ontbreekt}"
+: "${HOSTNAME_FQDN:?HOSTNAME_FQDN ontbreekt}"
 
 apt-get update
 apt-get upgrade -y
@@ -394,7 +423,26 @@ apt-get install -y \
   docker-compose-plugin
 
 systemctl enable --now docker
-mkdir -p /opt/apps
+mkdir -p "/opt/${APP_NAME}"
+
+install -d -m 0700 /root/.ssh
+if [[ ! -f /root/.ssh/github_deploy_key ]]; then
+  ssh-keygen -q -t ed25519 -N '' \
+    -C "deploy-${APP_NAME}@${HOSTNAME_FQDN}" \
+    -f /root/.ssh/github_deploy_key
+fi
+chmod 0600 /root/.ssh/github_deploy_key
+chmod 0644 /root/.ssh/github_deploy_key.pub
+
+cat > /root/.ssh/config <<'EOF'
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile /root/.ssh/github_deploy_key
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+EOF
+chmod 0600 /root/.ssh/config
 
 docker run --rm hello-world >/dev/null
 
@@ -408,11 +456,13 @@ BOOTSTRAP
 chmod +x "$cleanup_file"
 pct push "$CTID" "$cleanup_file" /root/bootstrap-docker.sh --perms 0755
 
-log "Git, Docker Engine, Buildx en Docker Compose installeren"
-pct exec "$CTID" -- /root/bootstrap-docker.sh
+log "Git, Docker Engine, Buildx, Docker Compose en GitHub deploy key installeren"
+pct exec "$CTID" -- env APP_NAME="$APP_NAME" HOSTNAME_FQDN="$HOSTNAME" /root/bootstrap-docker.sh
 pct exec "$CTID" -- rm -f /root/bootstrap-docker.sh
 
 IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+DEPLOY_PUBLIC_KEY="$(pct exec "$CTID" -- cat /root/.ssh/github_deploy_key.pub)"
+DEPLOY_FINGERPRINT="$(pct exec "$CTID" -- ssh-keygen -lf /root/.ssh/github_deploy_key.pub | awk '{print $2}')"
 
 success "LXC provisioning voltooid"
 cat <<EOF
@@ -423,6 +473,8 @@ LXC klaar
 Bootstrap:  $BOOTSTRAP_VERSION
 CTID:       $CTID
 Hostname:   $HOSTNAME
+App:        $APP_NAME
+App map:    $APP_DIR
 Arch:       $HOST_ARCH
 CPU:        $CORES cores
 RAM:        ${MEMORY_MB} MB
@@ -436,10 +488,30 @@ IP:         ${IP:-onbekend}
 Git:        geïnstalleerd
 Docker:     geïnstalleerd
 Compose:    geïnstalleerd
-Apps:       /opt/apps
+
+ROOT WACHTWOORD
+---------------
+$ROOT_PASSWORD
+
+GITHUB DEPLOY KEY (PUBLIC)
+--------------------------
+$DEPLOY_PUBLIC_KEY
+
+Fingerprint: $DEPLOY_FINGERPRINT
+Private key: /root/.ssh/github_deploy_key
+
+Voeg bovenstaande PUBLIC key toe aan:
+GitHub repository -> Settings -> Deploy keys -> Add deploy key
+Read-only is voldoende voor git clone/pull.
 
 Open shell:
   pct enter $CTID
+
+Applicatiemap:
+  cd $APP_DIR
+
+Test GitHub-authenticatie nadat de deploy key is toegevoegd:
+  pct exec $CTID -- ssh -T git@github.com
 
 Docker controle:
   pct exec $CTID -- docker ps
