@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="2026.09.11.3"
+BOOTSTRAP_VERSION="2026.09.11.4"
 
-# Optional host-level configuration file. Environment variables passed to the
-# command override values from the config file.
 CONFIG_FILE="${CONFIG_FILE:-}"
 if [[ -n "$CONFIG_FILE" ]]; then
   [[ -f "$CONFIG_FILE" ]] || {
@@ -13,7 +11,7 @@ if [[ -n "$CONFIG_FILE" ]]; then
   }
 
   declare -A ENV_OVERRIDES=()
-  for key in CORES MEMORY_MB SWAP_MB DISK_GB TEMPLATE_STORAGE ROOTFS_STORAGE BRIDGE IP_CONFIG GATEWAY TEMPLATE_PATTERN UNPRIVILEGED ONBOOT FEATURES; do
+  for key in CORES MEMORY_MB SWAP_MB DISK_GB TEMPLATE_STORAGE ROOTFS_STORAGE BRIDGE IP_CONFIG GATEWAY TEMPLATE_PATTERN UNPRIVILEGED ONBOOT FEATURES ROOT_PASSWORD; do
     if [[ -v "$key" ]]; then
       ENV_OVERRIDES["$key"]="${!key}"
     fi
@@ -356,7 +354,6 @@ done
 
 [[ "$ready" == "1" ]] || fail "Container $CTID startte niet tijdig."
 
-# Set a generated root password without printing it before the final summary.
 pct exec "$CTID" -- /bin/bash -c "printf '%s\\n' 'root:${ROOT_PASSWORD}' | chpasswd"
 
 cleanup_file="$(mktemp)"
@@ -464,6 +461,50 @@ IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
 DEPLOY_PUBLIC_KEY="$(pct exec "$CTID" -- cat /root/.ssh/github_deploy_key.pub)"
 DEPLOY_FINGERPRINT="$(pct exec "$CTID" -- ssh-keygen -lf /root/.ssh/github_deploy_key.pub | awk '{print $2}')"
 
+cat <<EOF
+
+============================================================
+GITHUB DEPLOY KEY
+============================================================
+$DEPLOY_PUBLIC_KEY
+
+Fingerprint: $DEPLOY_FINGERPRINT
+
+Voeg deze PUBLIC key nu toe aan de gewenste GitHub repository:
+  Repository -> Settings -> Deploy keys -> Add deploy key
+
+Read-only is voldoende voor git clone/pull.
+Laat "Allow write access" uitgeschakeld tenzij je bewust vanuit deze LXC wilt pushen.
+============================================================
+EOF
+
+GITHUB_AUTH_STATUS="niet getest"
+if [[ -t 0 ]]; then
+  while true; do
+    printf '\nVoeg de deploy key toe in GitHub en druk daarna op Enter om de authenticatie te testen... '
+    read -r _
+
+    AUTH_OUTPUT="$(pct exec "$CTID" -- ssh -o BatchMode=yes -o ConnectTimeout=15 -T git@github.com 2>&1 || true)"
+    printf '%s\n' "$AUTH_OUTPUT"
+
+    if grep -qi "successfully authenticated" <<<"$AUTH_OUTPUT"; then
+      GITHUB_AUTH_STATUS="OK"
+      success "GitHub deploy key authenticatie geslaagd"
+      break
+    fi
+
+    printf '\nGitHub-authenticatie is nog niet geslaagd. Controleer of de PUBLIC key bij de juiste repository onder Deploy keys staat.\n'
+    printf 'Druk Enter om opnieuw te testen, of typ q om de bootstrap hier af te sluiten: '
+    read -r RETRY
+    if [[ "$RETRY" =~ ^[Qq]$ ]]; then
+      GITHUB_AUTH_STATUS="MISLUKT"
+      break
+    fi
+  done
+else
+  log "Niet-interactieve run: GitHub-authenticatietest overgeslagen."
+fi
+
 success "LXC provisioning voltooid"
 cat <<EOF
 
@@ -488,30 +529,25 @@ IP:         ${IP:-onbekend}
 Git:        geïnstalleerd
 Docker:     geïnstalleerd
 Compose:    geïnstalleerd
+GitHub SSH: $GITHUB_AUTH_STATUS
 
 ROOT WACHTWOORD
 ---------------
 $ROOT_PASSWORD
 
-GITHUB DEPLOY KEY (PUBLIC)
---------------------------
-$DEPLOY_PUBLIC_KEY
+Deploy private key:
+  /root/.ssh/github_deploy_key
 
-Fingerprint: $DEPLOY_FINGERPRINT
-Private key: /root/.ssh/github_deploy_key
+Applicatiemap:
+  $APP_DIR
 
-Voeg bovenstaande PUBLIC key toe aan:
-GitHub repository -> Settings -> Deploy keys -> Add deploy key
-Read-only is voldoende voor git clone/pull.
+Na het clonen van je repository:
+  cd $APP_DIR
+  git pull
+  docker compose up -d --build
 
 Open shell:
   pct enter $CTID
-
-Applicatiemap:
-  cd $APP_DIR
-
-Test GitHub-authenticatie nadat de deploy key is toegevoegd:
-  pct exec $CTID -- ssh -T git@github.com
 
 Docker controle:
   pct exec $CTID -- docker ps
