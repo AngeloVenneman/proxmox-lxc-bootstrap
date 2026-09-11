@@ -41,27 +41,27 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-
 Het script vraagt dan eerst:
 
 ```text
-Hostname / domeinnaam (bv. d3deco.be):
+Hostname / domeinnaam:
 ```
 
-Voor `d3deco.be` wordt:
+Voor bijvoorbeeld `voorbeeld.be` wordt:
 
 ```text
-Hostname: d3deco.be
-App naam: d3deco
-App map:  /opt/d3deco
+Hostname: voorbeeld.be
+App naam: voorbeeld
+App map:  /opt/voorbeeld
 ```
 
 Je kunt de hostname ook rechtstreeks meegeven:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
+bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be
 ```
 
 Een specifieke CTID kan als tweede argument:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be 220
+bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be 220
 ```
 
 ## Root-wachtwoord
@@ -74,7 +74,7 @@ Wil je bewust zelf een wachtwoord meegeven, dan kan dat tijdelijk als environmen
 
 ```bash
 ROOT_PASSWORD='jouw-tijdelijke-wachtwoord' \
-  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
+  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be
 ```
 
 ## GitHub deploy key, authenticatie en clone
@@ -102,7 +102,9 @@ Wanneer de key in GitHub staat druk je in het bootstrap-script op Enter. Het scr
 Hi OWNER/REPOSITORY! You've successfully authenticated, but GitHub does not provide shell access.
 ```
 
-Het script haalt `OWNER/REPOSITORY` automatisch uit die melding en clonet daarna:
+Het script haalt `OWNER/REPOSITORY` automatisch uit die melding. Daardoor is het script niet gekoppeld aan één vaste repository: de repository hangt volledig af van waar jij de gegenereerde deploy key toevoegt.
+
+Daarna clonet het script:
 
 ```text
 git@github.com:OWNER/REPOSITORY.git
@@ -177,7 +179,7 @@ Wil je storage en bridge vooraf vastleggen:
 
 ```bash
 ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 \
-  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
+  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be
 ```
 
 ## Architectuur
@@ -194,14 +196,14 @@ Bijvoorbeeld 4 cores en 4096 MB RAM:
 
 ```bash
 CORES=4 MEMORY_MB=4096 \
-  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
+  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be
 ```
 
 Statisch IP:
 
 ```bash
 IP_CONFIG=192.168.95.220/24 GATEWAY=192.168.95.1 \
-  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
+  bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") voorbeeld.be
 ```
 
 ## Configuratiebestand gebruiken
