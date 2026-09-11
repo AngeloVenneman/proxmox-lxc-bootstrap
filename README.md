@@ -24,7 +24,11 @@ Publiek bootstrap-script om vanaf een Proxmox VE-host in één commando een Dock
 - willekeurig root-wachtwoord, getoond in de finale samenvatting
 - unieke ed25519 GitHub deploy key per LXC
 - interactieve pauze om de deploy key in GitHub toe te voegen
-- automatische GitHub SSH-authenticatietest voordat de bootstrap afrondt
+- automatische GitHub SSH-authenticatietest
+- automatische detectie van de repository uit de GitHub SSH-greeting
+- automatische clone naar `/opt/<appnaam>`
+- detectie van `compose.yaml`, `compose.yml`, `docker-compose.yaml` of `docker-compose.yml`
+- `C.UTF-8` tijdens provisioning om locale-warnings te vermijden
 
 ## Snelste gebruik
 
@@ -48,7 +52,7 @@ App naam: d3deco
 App map:  /opt/d3deco
 ```
 
-Je kunt de hostname nog altijd rechtstreeks meegeven:
+Je kunt de hostname ook rechtstreeks meegeven:
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
@@ -73,9 +77,7 @@ ROOT_PASSWORD='jouw-tijdelijke-wachtwoord' \
   bash <(curl -fsSL "https://raw.githubusercontent.com/AngeloVenneman/proxmox-lxc-bootstrap/main/create-lxc.sh?$(date +%s)") d3deco.be
 ```
 
-Gebruik dit alleen wanneer nodig; de automatisch gegenereerde waarde is de veiligere standaard.
-
-## GitHub deploy key
+## GitHub deploy key, authenticatie en clone
 
 In elke LXC wordt een unieke ed25519 deploy key aangemaakt:
 
@@ -94,11 +96,38 @@ Repository -> Settings -> Deploy keys -> Add deploy key
 
 Voor normaal deployen is read-only voldoende; laat `Allow write access` uitgeschakeld tenzij de LXC echt naar de repository moet kunnen pushen.
 
-Wanneer de key in GitHub staat druk je in het bootstrap-script op Enter. Het script voert dan zelf een SSH-authenticatietest naar GitHub uit. Een geslaagde GitHub-melding met `successfully authenticated` wordt als succes beschouwd, ook al biedt GitHub geen interactieve shell aan.
+Wanneer de key in GitHub staat druk je in het bootstrap-script op Enter. Het script voert dan zelf een SSH-authenticatietest naar GitHub uit. Bij een deploy key antwoordt GitHub bijvoorbeeld:
 
-Als de test nog niet slaagt kun je de GitHub-configuratie corrigeren en vanuit hetzelfde script opnieuw testen. De LXC hoeft niet opnieuw aangemaakt te worden.
+```text
+Hi OWNER/REPOSITORY! You've successfully authenticated, but GitHub does not provide shell access.
+```
 
-De LXC bevat ook `/root/.ssh/config`, zodat Git automatisch `/root/.ssh/github_deploy_key` gebruikt voor `github.com`.
+Het script haalt `OWNER/REPOSITORY` automatisch uit die melding en clonet daarna:
+
+```text
+git@github.com:OWNER/REPOSITORY.git
+```
+
+naar:
+
+```text
+/opt/<appnaam>
+```
+
+Kan de repositorynaam uitzonderlijk niet automatisch worden afgeleid, dan vraagt het script één keer om `OWNER/REPOSITORY`.
+
+Als de SSH-test nog niet slaagt kun je de GitHub-configuratie corrigeren en vanuit hetzelfde script opnieuw testen. De LXC hoeft niet opnieuw aangemaakt te worden.
+
+Na de clone controleert het script of een van deze Compose-bestanden bestaat:
+
+```text
+compose.yaml
+compose.yml
+docker-compose.yaml
+docker-compose.yml
+```
+
+Docker Compose wordt bewust nog niet automatisch gestart. Zo kun je eerst bijvoorbeeld `.env` of applicatiesecrets configureren.
 
 ## Storagekeuze
 
@@ -227,7 +256,7 @@ FEATURES=nesting=1,keyctl=1
 13. Downloadt de template indien nodig.
 14. Maakt en start de LXC.
 15. Stelt het gegenereerde root-wachtwoord in.
-16. Voert `apt update` en `apt upgrade` uit.
+16. Voert `apt update` en `apt upgrade` uit met `C.UTF-8`.
 17. Installeert Git en basis-tools.
 18. Configureert de officiële Docker APT-repository.
 19. Installeert Docker Engine, Buildx en Compose.
@@ -236,7 +265,10 @@ FEATURES=nesting=1,keyctl=1
 22. Test Docker met `hello-world`.
 23. Toont de public deploy key en wacht tot je die in GitHub hebt toegevoegd.
 24. Test de GitHub SSH-authenticatie en laat indien nodig opnieuw proberen.
-25. Toont de finale samenvatting met root-wachtwoord en GitHub-status.
+25. Detecteert automatisch welke repository bij de deploy key hoort.
+26. Clonet die repository naar `/opt/<appnaam>`.
+27. Detecteert een Docker Compose-bestand.
+28. Toont de finale samenvatting met root-wachtwoord, repository, checkout- en Compose-status.
 
 ## Na provisioning
 
@@ -246,22 +278,12 @@ Open de container:
 pct enter <CTID>
 ```
 
-Ga daarna naar de applicatiemap:
-
-```bash
-cd /opt/<appnaam>
-```
-
-De deploy key is dan al geverifieerd tegen GitHub. Je kunt de repository vervolgens klonen naar de applicatiemap:
-
-```bash
-git clone git@github.com:OWNER/REPOSITORY.git /opt/<appnaam>
-```
-
-Daarna zijn toekomstige deployments bijvoorbeeld:
+De repository staat dan al onder de applicatiemap. Voor een volgende update:
 
 ```bash
 cd /opt/<appnaam>
 git pull
 docker compose up -d --build
 ```
+
+Configureer eventuele `.env`- of andere applicatiesecrets vóór je Compose voor de eerste keer start.
