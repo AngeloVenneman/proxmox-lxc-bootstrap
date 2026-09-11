@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="2026.09.11.5"
+BOOTSTRAP_VERSION="2026.09.11.6"
 
 CONFIG_FILE="${CONFIG_FILE:-}"
 if [[ -n "$CONFIG_FILE" ]]; then
@@ -47,12 +47,12 @@ Usage:
 
 Examples:
   create-lxc.sh
-  create-lxc.sh d3deco.be
-  create-lxc.sh d3deco.be 220
+  create-lxc.sh voorbeeld.be
+  create-lxc.sh voorbeeld.be 220
 
 When no hostname is supplied, the script asks for one interactively.
 The first hostname label becomes the app directory under /opt.
-Example: d3deco.be -> /opt/d3deco
+Example: voorbeeld.be -> /opt/voorbeeld
 
 Default profile:
   CPU:       2 cores
@@ -67,8 +67,8 @@ Default profile:
   Bridge:    asks when multiple bridges are available
 
 Override settings with environment variables, for example:
-  CORES=4 MEMORY_MB=4096 create-lxc.sh d3deco.be
-  ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 create-lxc.sh d3deco.be
+  CORES=4 MEMORY_MB=4096 create-lxc.sh voorbeeld.be
+  ROOTFS_STORAGE=local-zfs BRIDGE=vmbr1 create-lxc.sh voorbeeld.be
 EOF
 }
 
@@ -102,7 +102,7 @@ done
 HOSTNAME="${1:-}"
 if [[ -z "$HOSTNAME" ]]; then
   if [[ -t 0 ]]; then
-    printf 'Hostname / domeinnaam (bv. d3deco.be): '
+    printf 'Hostname / domeinnaam: '
     read -r HOSTNAME
   else
     usage
